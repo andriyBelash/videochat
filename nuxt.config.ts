@@ -5,7 +5,8 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      signalingUrl: 'ws://192.168.88.27:8080/ws',
+      // signalingUrl: 'ws://0.0.0.0:8080/ws',
+      signalingUrl: 'wss://meet.vidnik.xyz/ws',
     },
   },
 
