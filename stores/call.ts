@@ -41,19 +41,25 @@ export const useCallStore = defineStore('call', () => {
 
   // Send message over WebSocket
   const send = (message: SignalingMessage): void => {
-    if (!ws.value || ws.value.readyState !== WebSocket.OPEN) return
-    ws.value.send(JSON.stringify(message))
+    if (!ws.value || ws.value.readyState !== WebSocket.OPEN) {
+      console.warn('WebSocket not open, cannot send message:', message);
+      return;
+    }
+    ws.value.send(JSON.stringify(message));
+    console.log('Sent message:', message.type, message);
   }
 
   // Establish WebSocket connection
   const connect = (): void => {
     ws.value = new WebSocket(signalingUrl)
     ws.value.onopen = () => {
+      console.log('WebSocket connection opened');
       ws.value?.send(JSON.stringify({ type: 'register', name: userName.value, room: 'main_room' }))
     }
 
     ws.value.onmessage = (event: MessageEvent) => {
       const data = JSON.parse(event.data)
+      console.log('Received message:', data.type, data);
       if (data.type === 'registered') {
         localParticipantId.value = data.id
         console.log('Registered with ID:', localParticipantId.value)
@@ -64,7 +70,25 @@ export const useCallStore = defineStore('call', () => {
 
     ws.value.onclose = () => {
       console.log('WebSocket connection closed')
-      // Optionally implement reconnection logic here
+      // Clear existing connections
+      Object.keys(peerConnections.value).forEach(id => {
+        if (peerConnections.value[id]) {
+          peerConnections.value[id].close();
+          delete peerConnections.value[id];
+        }
+      });
+      // Clear remote streams
+      remoteStreams.value = {};
+      
+      // Attempt to reconnect after a delay
+      setTimeout(() => {
+        console.log('Attempting to reconnect...');
+        connect();
+      }, 3000);
+    }
+    
+    ws.value.onerror = (error) => {
+      console.error('WebSocket error:', error);
     }
   }
 
@@ -286,7 +310,6 @@ export const useCallStore = defineStore('call', () => {
     }
 
     switch (data.type) {
-      // Add this case to your handleMessage function in call.ts
       case 'participants':
         const participants = data.participants || [];
         const participantIds = participants.map(p => p.id);
@@ -298,19 +321,41 @@ export const useCallStore = defineStore('call', () => {
           if (
             participant &&
             participant.id &&
-            participant.id !== localParticipantId.value &&
-            (!peerConnections.value[participant.id] ||
-              peerConnections.value[participant.id].connectionState === 'closed' ||
-              peerConnections.value[participant.id].iceConnectionState === 'closed')
+            participant.id !== localParticipantId.value
           ) {
-            console.log(`Detected new participant: ${participant.id} (${participant.name})`);
-
-            // Establish connection to new participant
-            if (localParticipantId.value < participant.id) {
-              console.log(`Initiating connection to: ${participant.id}`);
-              handleNewParticipant(participant.id);
-            } else {
-              console.log(`Waiting for connection from: ${participant.id}`);
+            console.log(`Detected participant: ${participant.id} (${participant.name})`);
+            
+            // Check if we need to create or recreate the connection
+            const needsNewConnection = !peerConnections.value[participant.id] || 
+              peerConnections.value[participant.id].connectionState === 'closed' || 
+              peerConnections.value[participant.id].iceConnectionState === 'closed' ||
+              peerConnections.value[participant.id].connectionState === 'failed';
+            
+            // Check if we have a connection but no stream
+            const hasConnectionButNoStream = peerConnections.value[participant.id] && 
+              !remoteStreams.value[participant.id];
+              
+            if (needsNewConnection || hasConnectionButNoStream) {
+              console.log(`Setting up connection with: ${participant.id}`);
+              
+              // Always create a peer connection
+              createPeerConnection(participant.id);
+              
+              // Use a deterministic approach to decide who initiates
+              if (localParticipantId.value < participant.id) {
+                console.log(`Initiating connection to: ${participant.id}`);
+                handleNewParticipant(participant.id);
+              } else {
+                console.log(`Waiting for connection from: ${participant.id}`);
+                // After a short delay, check if we've received an offer
+                setTimeout(() => {
+                  const pc = peerConnections.value[participant.id];
+                  if (pc && pc.signalingState === 'stable' && !remoteStreams.value[participant.id]) {
+                    console.log(`No offer received from ${participant.id}, initiating connection anyway`);
+                    handleNewParticipant(participant.id);
+                  }
+                }, 2000); // 2 second timeout
+              }
             }
           }
         });
